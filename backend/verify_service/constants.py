@@ -1,0 +1,30 @@
+CONTEXT_GRAPH_ID = "2c536779-d3e6-43ef-bc0c-cd4d97dc8c6c"
+TRENCH_GRAPH_ID = "cc91f1ff-6ea8-422c-be14-b818660f66f8"
+MODEL_3D_GRAPH_ID = "039f5a45-82e2-4597-8609-d24c758bfd59"
+IIIF_GRAPH_ID = "f1b9e37a-c3ba-4c26-a797-7f16302c031c"
+POTTERY_GRAPH_ID = "32a4c0b9-ab8c-47a0-a42f-99cd3ad392fe"
+
+CONTEXT_NUMBER_NODE_ID = "cf7f2532-74f3-487f-9261-bf27825fe04c"
+CONTEXT_TRENCH_NODE_ID = "13e52ba6-b14d-41de-9a09-8bd1186edc10"
+CONTEXT_HARRIS_NODE_IDS = (
+    "2510dc70-b915-4677-86ba-3e3297134ce7",  # above
+    "1a86987c-f436-41f7-a8d8-2742f58b0616",  # below
+    "26ed0689-b697-4f7d-87fd-d76f4bf21b92",  # same level
+)
+MODEL_3D_CONTEXT_NODE_ID = "f67c4c42-fe0e-489b-9af7-58405ad7c65f"
+IIIF_CONTEXT_NODE_ID = "8bedf116-657a-4eb5-af06-b4de29839966"
+POTTERY_CONTEXT_NODE_ID = "622addb9-60c1-498c-ab40-bef9ded91f2f"
+
+# Every descendant of these semantic branches is excluded from completeness.
+COMPLETENESS_EXCLUDED_ROOTS = (
+    *CONTEXT_HARRIS_NODE_IDS,
+    "0fa0f8dc-8c34-489f-9d95-d0d6026f303b",  # photos or drawings
+    "62ce85a9-150c-4485-8a7b-39f5c75b26ae",  # spatial extent
+    "220ee2cf-7b17-4762-a022-cf55e4b544c5",  # descriptive information
+)
+COMPLETENESS_OPTIONAL_NODES = (
+    "9a57caec-c249-40d2-b96e-34ae4f8e4a68",  # Comment outside excluded branches
+)
+
+SNAPSHOT_CACHE_KEY = "verify:context:snapshot:v1"
+SNAPSHOT_TTL_SECONDS = 300
