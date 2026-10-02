@@ -8,21 +8,44 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
 
-from .cache import cached_snapshot
-from .constants import CONTEXT_GRAPH_ID
+from .cache import cached_resource_snapshot
+from .profiles import CONTEXT_PROFILE, PROFILES, ResourceProfile
 from .report import SORTS, ReportQuery, build_report
-from .repository import load_snapshot
-from .rules import ALL_RULE_IDS, RULES
+from .repository import load_resource_snapshot
+from .rules import RULE_SPECS_BY_RESOURCE_TYPE, RuleSpec
+from .types import ResourceSnapshot
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="Context verification", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Arches verification", docs_url=None, redoc_url=None, openapi_url=None)
 
 
-def _snapshot():
+def _profile(resource_type: str | None, graph_id: str | None) -> ResourceProfile:
+    if resource_type:
+        profile = PROFILES.get(resource_type)
+    elif graph_id:
+        profile = next((item for item in PROFILES.values() if item.graph_id == graph_id), None)
+    else:
+        profile = CONTEXT_PROFILE
+    if profile is None or (graph_id and graph_id != profile.graph_id):
+        raise HTTPException(status_code=400, detail="Nieznany typ zasobu")
+    if profile.id not in RULE_SPECS_BY_RESOURCE_TYPE:
+        raise HTTPException(status_code=400, detail="Brak zasad dla wybranego typu zasobu")
+    return profile
+
+
+def _specs(profile: ResourceProfile) -> tuple[RuleSpec, ...]:
+    return RULE_SPECS_BY_RESOURCE_TYPE[profile.id]
+
+
+def _model(profile: ResourceProfile) -> dict[str, str]:
+    return {"resource_type": profile.id, "graph_id": profile.graph_id, "name": profile.label}
+
+
+def _snapshot(profile: ResourceProfile) -> ResourceSnapshot:
     try:
-        return cached_snapshot(load_snapshot)
+        return cached_resource_snapshot(profile, load_resource_snapshot)
     except Exception:
-        logger.exception("Could not read Arches data")
+        logger.exception("Could not read Arches data for %s", profile.id)
         raise HTTPException(status_code=503, detail="Dane Arches są chwilowo niedostępne") from None
 
 
@@ -53,24 +76,45 @@ def _boolean(value: str, label: str) -> bool:
     raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {label}")
 
 
+def _defaults(specs: tuple[RuleSpec, ...]) -> dict:
+    today = datetime.now(ZoneInfo("Europe/Warsaw")).date()
+    return {
+        "from": (today - timedelta(days=29)).isoformat(),
+        "to": today.isoformat(),
+        "rules": [spec.id for spec in specs],
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/api/options")
-def options(response: Response):
-    snapshot = _snapshot()
-    today = datetime.now(ZoneInfo("Europe/Warsaw")).date()
+@app.get("/api/catalog")
+def catalog(response: Response):
+    """List available resource types without accessing PostgreSQL or Redis."""
     response.headers["Cache-Control"] = "no-store"
     return {
-        "model": {"graph_id": CONTEXT_GRAPH_ID, "name": "(O) Context"},
-        "rules": [{"id": rule.id, "label": rule.label, "description": rule.description} for rule in RULES],
+        "models": [_model(profile) for profile in PROFILES.values() if profile.id in RULE_SPECS_BY_RESOURCE_TYPE],
+    }
+
+
+@app.get("/api/options")
+def options(response: Response, resource_type: str | None = None, graph_id: str | None = None):
+    """Load choices for a selected profile; default Context supports the current UI."""
+    profile = _profile(resource_type, graph_id)
+    specs = _specs(profile)
+    snapshot = _snapshot(profile)
+    trenches = snapshot.related_resources.get("trench", {})
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "model": _model(profile),
+        "rules": [{"id": spec.id, "label": spec.label, "description": spec.description} for spec in specs],
         "trenches": [
             {"id": resource_id, "name": name}
-            for resource_id, name in sorted(snapshot.trenches.items(), key=lambda item: item[1].casefold())
+            for resource_id, name in sorted(trenches.items(), key=lambda item: item[1].casefold())
         ],
-        "defaults": {"from": (today - timedelta(days=29)).isoformat(), "to": today.isoformat(), "rules": list(ALL_RULE_IDS)},
+        "defaults": _defaults(specs),
         "generated_at": snapshot.generated_at,
     }
 
@@ -78,7 +122,8 @@ def options(response: Response):
 @app.get("/api/results")
 def results(
     response: Response,
-    graph_id: str = CONTEXT_GRAPH_ID,
+    resource_type: str | None = None,
+    graph_id: str | None = None,
     created_from: str | None = Query(default=None, alias="from"),
     created_to: str | None = Query(default=None, alias="to"),
     trench_id: str | None = None,
@@ -89,13 +134,14 @@ def results(
     page: str = "1",
     page_size: str = "100",
 ):
-    if graph_id != CONTEXT_GRAPH_ID:
-        raise HTTPException(status_code=400, detail="Na razie dostępne są tylko zasady Context")
+    profile = _profile(resource_type, graph_id)
+    specs = _specs(profile)
+    available_ids = {spec.id for spec in specs}
     start, end = _date(created_from, "od"), _date(created_to, "do")
     if start and end and start > end:
         raise HTTPException(status_code=400, detail="Data początkowa jest późniejsza niż końcowa")
-    rule_ids = tuple(dict.fromkeys(rules.split(",") if rules is not None else ALL_RULE_IDS))
-    if not rule_ids or any(rule_id not in ALL_RULE_IDS for rule_id in rule_ids):
+    rule_ids = tuple(dict.fromkeys(rules.split(",") if rules is not None else (spec.id for spec in specs)))
+    if not rule_ids or any(rule_id not in available_ids for rule_id in rule_ids):
         raise HTTPException(status_code=400, detail="Wybierz co najmniej jedną dostępną zasadę")
     if sort not in SORTS:
         raise HTTPException(status_code=400, detail="Nieznane sortowanie")
@@ -110,11 +156,11 @@ def results(
         page=_positive_int(page, "page"),
         page_size=_positive_int(page_size, "page_size", maximum=100),
     )
-    snapshot = _snapshot()
-    if query.trench_id and query.trench_id not in snapshot.trenches:
+    snapshot = _snapshot(profile)
+    if query.trench_id and query.trench_id not in snapshot.related_resources.get("trench", {}):
         raise HTTPException(status_code=400, detail="Nieznany Trench")
     response.headers["Cache-Control"] = "no-store"
-    return build_report(snapshot, query)
+    return build_report(snapshot, profile, specs, query)
 
 
 _dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"

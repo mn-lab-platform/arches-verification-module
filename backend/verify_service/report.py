@@ -1,13 +1,15 @@
-"""Filter a cached snapshot, evaluate cohort rules and return ready-to-render rows."""
+"""Filter a normalized snapshot and render verdicts from compiled rule specs."""
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
-from .constants import CONTEXT_GRAPH_ID
-from .rules import RULE_BY_ID, static_results, verdict
-from .types import ContextFact, Snapshot
+from .profiles import ResourceProfile
+from .repository import integer_number
+from .rule_engine import EvaluationResult, evaluate_rules
+from .rules import RuleSpec
+from .types import ResourceFact, ResourceSnapshot
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,7 @@ SORTS = {
 }
 
 WARSAW = ZoneInfo("Europe/Warsaw")
+HARRIS_RELATIONS = ("harris_above", "harris_below", "harris_same_level")
 
 
 def _created_date(created_at: str) -> date:
@@ -43,8 +46,16 @@ def _created_date(created_at: str) -> date:
     return timestamp.astimezone(WARSAW).date()
 
 
-def _format_gap(start: int, end: int) -> str:
-    return str(start) if start == end else f"{start}–{end}"
+def _trench_id(fact: ResourceFact) -> str | None:
+    relation = fact.relations.get("trench")
+    if relation and len(relation.target_ids) == len(relation.valid_target_ids) == 1:
+        return relation.valid_target_ids[0]
+    return None
+
+
+def _display_number(fact: ResourceFact) -> int | None:
+    values = fact.fields.get("number", [])
+    return integer_number(values[0]) if len(values) == 1 else None
 
 
 def _sort_rows(rows: list[dict], sort: str) -> None:
@@ -64,88 +75,81 @@ def _sort_rows(rows: list[dict], sort: str) -> None:
         rows.sort(key=lambda row: (row["created_at"], row["resource_id"]), reverse=True)
 
 
-def build_report(snapshot: Snapshot, query: ReportQuery) -> dict:
+def _gap_rows(evaluation: EvaluationResult, snapshot: ResourceSnapshot) -> list[dict]:
+    by_group: dict[tuple[str, tuple[str, ...]], list[dict[str, int]]] = defaultdict(list)
+    for rule_id, gaps in evaluation.gaps.items():
+        for gap in gaps:
+            by_group[(rule_id, gap.group)].append({"from": gap.start, "to": gap.end})
+    trenches = snapshot.related_resources.get("trench", {})
+    rows = []
+    for (rule_id, group), ranges in by_group.items():
+        trench_id = group[0] if len(group) == 1 else None
+        group_name = trenches.get(trench_id, trench_id) if trench_id else " / ".join(group)
+        rows.append({
+            "rule_id": rule_id,
+            "group": list(group),
+            "trench_id": trench_id,
+            "trench_name": group_name,
+            "ranges": ranges,
+            "missing_count": sum(item["to"] - item["from"] + 1 for item in ranges),
+        })
+    rows.sort(key=lambda row: (row["trench_name"].casefold(), row["rule_id"]))
+    return rows
+
+
+def build_report(
+    snapshot: ResourceSnapshot,
+    profile: ResourceProfile,
+    specs: tuple[RuleSpec, ...],
+    query: ReportQuery,
+) -> dict:
+    """Select a cohort, run its chosen rules and return ready-to-render rows."""
+    trenches = snapshot.related_resources.get("trench", {})
     base_ids = {
-        fact.resource_id for fact in snapshot.contexts.values()
+        fact.resource_id for fact in snapshot.resources.values()
         if (query.created_from is None or _created_date(fact.created_at) >= query.created_from)
         and (query.created_to is None or _created_date(fact.created_at) <= query.created_to)
-        and (query.trench_id is None or fact.trench_id == query.trench_id)
+        and (query.trench_id is None or _trench_id(fact) == query.trench_id)
     }
     visible_ids = set(base_ids)
     if query.include_harris:
         neighbors: dict[str, set[str]] = defaultdict(set)
-        for fact in snapshot.contexts.values():
-            for target in fact.harris_ids:
-                if target in snapshot.contexts:
-                    neighbors[fact.resource_id].add(target)
-                    neighbors[target].add(fact.resource_id)
+        for fact in snapshot.resources.values():
+            for alias in HARRIS_RELATIONS:
+                relation = fact.relations.get(alias)
+                if relation:
+                    for target in relation.valid_target_ids:
+                        if target in snapshot.resources:
+                            neighbors[fact.resource_id].add(target)
+                            neighbors[target].add(fact.resource_id)
         for resource_id in base_ids:
             visible_ids.update(neighbors[resource_id])
 
-    number_counts: dict[str, Counter] = defaultdict(Counter)
-    for resource_id in base_ids:
-        fact = snapshot.contexts[resource_id]
-        if fact.trench_id and fact.number is not None:
-            number_counts[fact.trench_id][fact.number] += 1
-
-    preceding_gaps: dict[tuple[str, int], tuple[int, int]] = {}
-    gaps = []
-    if "number_continuity" in query.rule_ids:
-        for trench_id, counts in sorted(number_counts.items(), key=lambda item: snapshot.trenches.get(item[0], "")):
-            numbers = sorted(counts)
-            missing_ranges = []
-            for previous, current in zip(numbers, numbers[1:]):
-                if current > previous + 1:
-                    preceding_gaps[(trench_id, current)] = (previous + 1, current - 1)
-                    missing_ranges.append({"from": previous + 1, "to": current - 1})
-            if missing_ranges:
-                gaps.append({
-                    "trench_id": trench_id,
-                    "trench_name": snapshot.trenches.get(trench_id, trench_id),
-                    "ranges": missing_ranges,
-                    "missing_count": sum(item["to"] - item["from"] + 1 for item in missing_ranges),
-                })
+    by_id = {spec.id: spec for spec in specs}
+    selected_specs = tuple(by_id[rule_id] for rule_id in query.rule_ids)
+    evaluation = evaluate_rules(selected_specs, profile, snapshot, base_ids, visible_ids)
 
     rows = []
     for resource_id in visible_ids:
-        fact: ContextFact = snapshot.contexts[resource_id]
-        results = static_results(fact)
-        if resource_id not in base_ids:
-            results["number_continuity"] = verdict("not_applicable", "Dołączony przez Harris; numeracja dotyczy zakresu bazowego")
-            results["number_unique"] = verdict("not_applicable", "Dołączony przez Harris; numeracja dotyczy zakresu bazowego")
-        elif fact.trench_id is None or fact.number is None:
-            message = fact.number_issue or fact.trench_issue or "Nie można ocenić numeracji"
-            results["number_continuity"] = verdict("fail", message)
-            results["number_unique"] = verdict("fail", message)
-        else:
-            gap = preceding_gaps.get((fact.trench_id, fact.number))
-            results["number_continuity"] = (
-                verdict("fail", f"Brak numerów {_format_gap(*gap)} przed Context Number {fact.number}")
-                if gap else verdict("pass")
-            )
-            count = number_counts[fact.trench_id][fact.number]
-            results["number_unique"] = (
-                verdict("fail", f"Context Number {fact.number} występuje {count} razy w wybranym zakresie")
-                if count > 1 else verdict("pass")
-            )
-
-        selected = {rule_id: results[rule_id] for rule_id in query.rule_ids}
-        failure_count = sum(result["status"] == "fail" for result in selected.values())
+        fact = snapshot.resources[resource_id]
+        results = evaluation.results[resource_id]
+        failure_count = sum(result["status"] == "fail" for result in results.values())
         overall_status = "fail" if failure_count else (
-            "not_applicable" if all(result["status"] == "not_applicable" for result in selected.values()) else "pass"
+            "not_applicable" if all(result["status"] == "not_applicable" for result in results.values()) else "pass"
         )
+        trench_id = _trench_id(fact)
         rows.append({
             "resource_id": resource_id,
             "name": fact.name,
             "resource_url": f"/report/{resource_id}",
             "created_at": fact.created_at,
-            "trench_id": fact.trench_id,
-            "trench_name": snapshot.trenches.get(fact.trench_id or "", "—"),
-            "number": fact.number,
+            "trench_id": trench_id,
+            "trench_name": trenches.get(trench_id or "", "—"),
+            "number": _display_number(fact),
             "source": "period" if resource_id in base_ids else "harris",
             "overall_status": overall_status,
             "failure_count": failure_count,
-            "results": selected,
+            "results": results,
         })
 
     failed_count = sum(row["overall_status"] == "fail" for row in rows)
@@ -157,10 +161,10 @@ def build_report(snapshot: Snapshot, query: ReportQuery) -> dict:
     total = len(rows)
     offset = (query.page - 1) * query.page_size
     return {
-        "model": {"graph_id": CONTEXT_GRAPH_ID, "name": "(O) Context"},
+        "model": {"resource_type": profile.id, "graph_id": profile.graph_id, "name": profile.label},
         "generated_at": snapshot.generated_at,
         "timezone": "Europe/Warsaw",
-        "rules": [{"id": rule_id, "label": RULE_BY_ID[rule_id].label} for rule_id in query.rule_ids],
+        "rules": [{"id": spec.id, "label": spec.label} for spec in selected_specs],
         "summary": {
             "base_count": len(base_ids),
             "total_scope": total_scope,
@@ -168,7 +172,7 @@ def build_report(snapshot: Snapshot, query: ReportQuery) -> dict:
             "failed": failed_count,
             "not_applicable": total_scope - passed_count - failed_count,
         },
-        "gaps": gaps,
+        "gaps": _gap_rows(evaluation, snapshot),
         "page": query.page,
         "page_size": query.page_size,
         "pages": (total + query.page_size - 1) // query.page_size,

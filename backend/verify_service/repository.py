@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from .profiles import CONTEXT_PROFILE, ResourceProfile
-from .types import ContextFact, NodeDefinition, RelationState, ResourceFact, ResourceSnapshot, Snapshot
+from .profiles import ResourceProfile
+from .types import NodeDefinition, RelationState, ResourceFact, ResourceSnapshot
 
 
 class DataModelError(RuntimeError):
@@ -73,49 +73,13 @@ def integer_number(value: Any) -> int | None:
         number = Decimal(str(value).strip())
     except (InvalidOperation, ValueError):
         return None
+    if not number.is_finite():
+        return None
     return int(number) if number == number.to_integral_value() else None
 
 
 # Keep the previous helper name available to existing callers.
 context_number = integer_number
-
-
-def completeness_nodes(
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    profile: ResourceProfile = CONTEXT_PROFILE,
-) -> dict[str, list[dict[str, Any]]]:
-    by_id = {node["nodeid"]: node for node in nodes}
-    expected = {
-        *profile.fields.values(),
-        *profile.completeness_excluded_roots.values(),
-        *profile.completeness_optional_fields.values(),
-        *(relation.node_id for relation in profile.related_graphs.values() if relation.direction == "outgoing"),
-    }
-    missing = expected - by_id.keys()
-    if missing:
-        raise DataModelError(f"Brak oczekiwanych pól grafu {profile.label}: {', '.join(sorted(missing))}")
-
-    children: dict[str, list[str]] = defaultdict(list)
-    for edge in edges:
-        children[edge["domainnodeid"]].append(edge["rangenodeid"])
-    excluded = set(profile.completeness_excluded_roots.values())
-    pending = list(excluded)
-    while pending:
-        for child in children[pending.pop()]:
-            if child not in excluded:
-                excluded.add(child)
-                pending.append(child)
-    excluded.update(profile.completeness_optional_fields.values())
-
-    by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for node in nodes:
-        if node["datatype"] != "semantic" and node["nodeid"] not in excluded:
-            group_id = node["nodegroupid"]
-            if not group_id:
-                raise DataModelError(f"Pole {node['nodeid']} nie ma nodegroup")
-            by_group[group_id].append(node)
-    return dict(by_group)
 
 
 def _created_at(value: Any) -> str:
@@ -260,86 +224,6 @@ def build_resource_snapshot(
     )
 
 
-def _context_snapshot(
-    normalized: ResourceSnapshot,
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-) -> Snapshot:
-    """Keep the current API working until generic rule evaluators replace ContextFact."""
-    required_by_group = completeness_nodes(nodes, edges, CONTEXT_PROFILE)
-    facts: dict[str, ContextFact] = {}
-    for resource_id, resource in normalized.resources.items():
-        trench = resource.relations["trench"]
-        raw_trench_ids = set(trench.target_ids)
-        valid_trench_ids = set(trench.valid_target_ids)
-        if len(raw_trench_ids) == len(valid_trench_ids) == 1:
-            trench_id = next(iter(valid_trench_ids))
-            trench_issue = None
-        else:
-            trench_id = None
-            trench_issue = (
-                "Brak powiązania z istniejącym Trench" if not raw_trench_ids or not valid_trench_ids
-                else "Context ma niejednoznaczne lub nieistniejące powiązanie z Trench"
-            )
-
-        raw_numbers = resource.fields.get("number", [])
-        number = integer_number(raw_numbers[0]) if len(raw_numbers) == 1 else None
-        number_issue = None if number is not None else "Brak jednego poprawnego, całkowitego Context Number"
-        harris_ids = sorted(
-            set().union(*(
-                resource.relations[name].valid_target_ids
-                for name in ("harris_above", "harris_below", "harris_same_level")
-            )) - {resource_id}
-        )
-
-        completeness_issues = []
-        for group_id, group_nodes in required_by_group.items():
-            group_entries = resource.group_values.get(group_id, [])
-            if not group_entries:
-                completeness_issues.extend(f"Brak pola: {localized(node['name'])}" for node in group_nodes)
-                continue
-            for index, values in enumerate(group_entries, start=1):
-                suffix = f" (wpis {index})" if len(group_entries) > 1 else ""
-                completeness_issues.extend(
-                    f"Brak pola: {localized(node['name'])}{suffix}"
-                    for node in group_nodes if not values.get(node["nodeid"], False)
-                )
-
-        facts[resource_id] = ContextFact(
-            resource_id=resource_id,
-            name=resource.name,
-            created_at=resource.created_at,
-            trench_id=trench_id,
-            trench_issue=trench_issue,
-            number=number,
-            number_issue=number_issue,
-            harris_ids=harris_ids,
-            completeness_issues=completeness_issues,
-            has_3d=bool(resource.relations["3d"].valid_target_ids),
-            has_iiif=bool(resource.relations["iiif"].valid_target_ids),
-            has_pottery=bool(resource.relations["pottery"].valid_target_ids),
-        )
-    return Snapshot(
-        generated_at=normalized.generated_at,
-        trenches=normalized.related_resources["trench"],
-        contexts=facts,
-    )
-
-
-def build_snapshot(
-    graphs: list[dict[str, Any]],
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    resources: list[dict[str, Any]],
-    tiles: list[dict[str, Any]],
-    generated_at: str | None = None,
-) -> Snapshot:
-    normalized = build_resource_snapshot(
-        CONTEXT_PROFILE, graphs, nodes, edges, resources, tiles, generated_at
-    )
-    return _context_snapshot(normalized, nodes, edges)
-
-
 def _database_config() -> dict[str, Any]:
     from psycopg.rows import dict_row
 
@@ -391,22 +275,3 @@ def load_resource_snapshot(profile: ResourceProfile) -> ResourceSnapshot:
                 graph_ids,
             ).fetchall()
     return build_resource_snapshot(profile, graphs, nodes, edges, resources, tiles)
-
-
-def load_snapshot() -> Snapshot:
-    """Compatibility loader for the current Context API."""
-    normalized = load_resource_snapshot(CONTEXT_PROFILE)
-    nodes = [
-        {
-            "nodeid": node.node_id,
-            "nodegroupid": node.nodegroup_id,
-            "datatype": node.datatype,
-            "name": node.name,
-        }
-        for node in normalized.nodes.values()
-    ]
-    edges = [
-        {"domainnodeid": domain, "rangenodeid": range_}
-        for domain, range_ in normalized.edges
-    ]
-    return _context_snapshot(normalized, nodes, edges)

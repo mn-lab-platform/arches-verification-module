@@ -1,16 +1,8 @@
-"""Hardcoded rule declarations and the current Context evaluators."""
+"""Hardcoded rule declarations for the current resource types."""
 
 from dataclasses import dataclass, field
-from typing import Literal, TypeAlias
-
-from .types import ContextFact
-
-
-@dataclass(frozen=True)
-class Rule:
-    id: str
-    label: str
-    description: str
+from types import MappingProxyType
+from typing import Literal, Mapping, TypeAlias
 
 
 @dataclass(frozen=True)
@@ -138,20 +130,10 @@ CONTEXT_RULE_SPECS: tuple[RuleSpec, ...] = (
     ),
 )
 
-RULES = tuple(Rule(spec.id, spec.label, spec.description) for spec in CONTEXT_RULE_SPECS)
-RULE_BY_ID = {rule.id: rule for rule in RULES}
-ALL_RULE_IDS = tuple(rule.id for rule in RULES)
+RULE_SPECS_BY_RESOURCE_TYPE: Mapping[str, tuple[RuleSpec, ...]] = MappingProxyType({
+    "context": CONTEXT_RULE_SPECS,
+})
 
 
 def verdict(status: str, *messages: str) -> dict:
     return {"status": status, "messages": [message for message in messages if message]}
-
-
-def static_results(fact: ContextFact) -> dict[str, dict]:
-    return {
-        "trench": verdict("fail", fact.trench_issue) if fact.trench_issue else verdict("pass"),
-        "complete": verdict("fail", *fact.completeness_issues) if fact.completeness_issues else verdict("pass"),
-        "linked_3d": verdict("pass") if fact.has_3d else verdict("fail", "Brak powiązanego zasobu 3D"),
-        "linked_iiif": verdict("pass") if fact.has_iiif else verdict("fail", "Brak powiązanego zasobu IIIF"),
-        "linked_pottery": verdict("pass") if fact.has_pottery else verdict("fail", "Brak powiązanego Pottery Collection"),
-    }

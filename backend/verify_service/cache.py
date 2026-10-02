@@ -1,4 +1,4 @@
-"""A single, bounded, five-minute snapshot in the existing Redis instance."""
+"""Five-minute Redis snapshots, keyed by resource profile."""
 
 import json
 import logging
@@ -7,13 +7,19 @@ import zlib
 from collections.abc import Callable
 from typing import Any
 
-from .constants import SNAPSHOT_CACHE_KEY, SNAPSHOT_TTL_SECONDS
-from .types import Snapshot
+from .constants import SNAPSHOT_CACHE_PREFIX, SNAPSHOT_TTL_SECONDS
+from .profiles import ResourceProfile
+from .types import ResourceSnapshot
 
 logger = logging.getLogger(__name__)
 
 
-def cached_snapshot(loader: Callable[[], Snapshot], client: Any = None) -> Snapshot:
+def cached_resource_snapshot(
+    profile: ResourceProfile,
+    loader: Callable[[ResourceProfile], ResourceSnapshot],
+    client: Any = None,
+) -> ResourceSnapshot:
+    """Use a fresh database read on a miss; never return an expired snapshot."""
     if client is None:
         try:
             import redis
@@ -24,20 +30,24 @@ def cached_snapshot(loader: Callable[[], Snapshot], client: Any = None) -> Snaps
                 socket_timeout=1,
             )
         except Exception as error:
-            logger.warning("Redis unavailable; loading Context from PostgreSQL: %s", error)
-            return loader()
+            logger.warning("Redis unavailable; loading %s from PostgreSQL: %s", profile.id, error)
+            return loader(profile)
 
+    key = f"{SNAPSHOT_CACHE_PREFIX}{profile.id}"
     try:
-        raw = client.get(SNAPSHOT_CACHE_KEY)
+        raw = client.get(key)
         if raw:
-            return Snapshot.from_dict(json.loads(zlib.decompress(raw)))
+            snapshot = ResourceSnapshot.from_dict(json.loads(zlib.decompress(raw)))
+            if snapshot.resource_type == profile.id and snapshot.graph_id == profile.graph_id:
+                return snapshot
+            logger.warning("Cache profile mismatch for %s; rebuilding", profile.id)
     except Exception as error:
-        logger.warning("Context cache read failed; rebuilding: %s", error)
+        logger.warning("%s cache read failed; rebuilding: %s", profile.id, error)
 
-    snapshot = loader()
+    snapshot = loader(profile)
     try:
         payload = zlib.compress(json.dumps(snapshot.to_dict(), ensure_ascii=False).encode("utf-8"))
-        client.set(SNAPSHOT_CACHE_KEY, payload, ex=SNAPSHOT_TTL_SECONDS)
+        client.set(key, payload, ex=SNAPSHOT_TTL_SECONDS)
     except Exception as error:
-        logger.warning("Context cache write failed; using fresh PostgreSQL data: %s", error)
+        logger.warning("%s cache write failed; using fresh PostgreSQL data: %s", profile.id, error)
     return snapshot

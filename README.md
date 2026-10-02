@@ -1,6 +1,6 @@
 # Context verification service
 
-Standalone Python 3.13 API and static Astro/Preact frontend. The service reads Arches PostgreSQL with a dedicated read-only role and caches a normalized Context snapshot in Redis for 300 seconds. It never imports the Arches application package.
+Standalone Python 3.13 API and static Astro/Preact frontend. The service reads Arches PostgreSQL with a dedicated read-only role and caches one normalized snapshot per selected resource type in Redis for 300 seconds. It never imports the Arches application package.
 
 ## Deployment in this workspace
 
@@ -12,4 +12,4 @@ The browser receives only normalized row facts and rule results. The current ver
 
 ## Local checks
 
-Run pure Python tests with `PYTHONPATH=backend python3 -m unittest discover -s backend/tests`. Build the frontend with `npm ci && npm run build` in `frontend` or build the Docker image. The app exposes `/health`, `/api/options`, and `/api/results` internally; nginx publishes them below `/verify/`.
+Build the frontend with `npm ci && npm run build` in `frontend` or build the Docker image. The app exposes `/health`, `/api/catalog`, `/api/options`, and `/api/results` internally; nginx publishes them below `/verify/`.
