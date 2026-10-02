@@ -19,7 +19,7 @@ h1{font-size:clamp(32px,4vw,51px);line-height:1.12;letter-spacing:-.045em;margin
 .section-heading{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:22px}
 .section-heading h2{font-size:23px;letter-spacing:-.035em;color:#18363c;margin:5px 0 0}
 .section-heading p{color:#71878a;font-size:13px;margin:0 0 2px}
-.filter-grid{display:grid;grid-template-columns:1.05fr .75fr .75fr 1.3fr;gap:14px}
+.filter-grid{display:grid;grid-template-columns:.75fr .75fr 1.3fr;gap:14px}
 .filter-grid label,.table-toolbar>label:not(.checkbox-line){display:flex;flex-direction:column;gap:8px;font-size:12px;font-weight:800;color:#445c60}
 input[type=date],select{width:100%;height:43px;padding:0 12px;border:1px solid #cadbd9;border-radius:9px;background:#fff;color:#17383e;outline:none}
 input[type=date]:focus,select:focus{border-color:#2c8284;box-shadow:0 0 0 3px #d7eded}

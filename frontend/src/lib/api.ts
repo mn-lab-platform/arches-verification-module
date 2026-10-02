@@ -1,8 +1,10 @@
 export type Rule = { id: string; label: string; description: string };
 export type Trench = { id: string; name: string };
+export type ResourceModel = { resource_type: string; graph_id: string; name: string };
+export type Catalog = { models: ResourceModel[] };
 
 export type Options = {
-  model: { graph_id: string; name: string };
+  model: ResourceModel;
   rules: Rule[];
   trenches: Trench[];
   defaults: { from: string; to: string; rules: string[] };

@@ -23,7 +23,6 @@ export default function FilterPanel({ options, filters, loading, onChange, onSub
     </div>
     <form onSubmit={onSubmit}>
       <div class="filter-grid">
-        <label>Typ zasobu<select value={options.model.graph_id} disabled><option value={options.model.graph_id}>{options.model.name}</option></select></label>
         <label>Data od<input type="date" value={filters.from} onInput={(event) => update({ from: event.currentTarget.value })} /></label>
         <label>Data do<input type="date" value={filters.to} onInput={(event) => update({ to: event.currentTarget.value })} /></label>
         <label>Trench<select value={filters.trenchId} onChange={(event) => update({ trenchId: event.currentTarget.value })}>
