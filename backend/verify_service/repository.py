@@ -66,7 +66,7 @@ def related_ids(value: Any) -> set[str]:
     return set()
 
 
-def context_number(value: Any) -> int | None:
+def integer_number(value: Any) -> int | None:
     if isinstance(value, bool) or not has_value(value):
         return None
     try:
@@ -74,6 +74,10 @@ def context_number(value: Any) -> int | None:
     except (InvalidOperation, ValueError):
         return None
     return int(number) if number == number.to_integral_value() else None
+
+
+# Keep the previous helper name available to existing callers.
+context_number = integer_number
 
 
 def completeness_nodes(
@@ -279,7 +283,7 @@ def _context_snapshot(
             )
 
         raw_numbers = resource.fields.get("number", [])
-        number = context_number(raw_numbers[0]) if len(raw_numbers) == 1 else None
+        number = integer_number(raw_numbers[0]) if len(raw_numbers) == 1 else None
         number_issue = None if number is not None else "Brak jednego poprawnego, całkowitego Context Number"
         harris_ids = sorted(
             set().union(*(
