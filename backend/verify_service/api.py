@@ -3,9 +3,10 @@
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 
 from .cache import cached_resource_snapshot
@@ -58,22 +59,75 @@ def _date(value: str | None, label: str) -> date | None:
         raise HTTPException(status_code=400, detail=f"Niepoprawna data {label}") from None
 
 
-def _positive_int(value: str, label: str, maximum: int | None = None) -> int:
+def _positive_int(value: str | int, label: str, maximum: int | None = None) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {label}")
     try:
         number = int(value)
-    except ValueError:
+    except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {label}") from None
     if number < 1 or (maximum is not None and number > maximum):
         raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {label}")
     return number
 
 
-def _boolean(value: str, label: str) -> bool:
+def _boolean(value: str | bool, label: str) -> bool:
+    if isinstance(value, bool):
+        return value
     if value.lower() in {"true", "1", "yes"}:
         return True
     if value.lower() in {"false", "0", "no"}:
         return False
     raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {label}")
+
+
+def _body_string(body: dict, key: str, default: str | None = None) -> str | None:
+    value = body.get(key, default)
+    if value is not None and not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {key}")
+    return value
+
+
+def _body_int(body: dict, key: str, default: int) -> str | int:
+    value = body.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {key}")
+    return value
+
+
+def _body_bool(body: dict, key: str) -> str | bool:
+    value = body.get(key, False)
+    if not isinstance(value, (str, bool)):
+        raise HTTPException(status_code=400, detail=f"Niepoprawna wartość {key}")
+    return value
+
+
+def _resource_ids(body: dict) -> frozenset[str]:
+    values = body.get("resource_ids")
+    if not isinstance(values, list):
+        raise HTTPException(status_code=400, detail="resource_ids musi być listą identyfikatorów UUID")
+    try:
+        if any(not isinstance(value, str) for value in values):
+            raise ValueError
+        return frozenset(str(UUID(value)) for value in values)
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Niepoprawny identyfikator w resource_ids") from None
+
+
+def _rule_ids(value: str | list[str] | None, specs: tuple[RuleSpec, ...]) -> tuple[str, ...]:
+    if value is None:
+        requested = (spec.id for spec in specs)
+    elif isinstance(value, str):
+        requested = value.split(",")
+    elif isinstance(value, list) and all(isinstance(rule_id, str) for rule_id in value):
+        requested = value
+    else:
+        raise HTTPException(status_code=400, detail="Niepoprawna lista zasad")
+    rule_ids = tuple(dict.fromkeys(requested))
+    available_ids = {spec.id for spec in specs}
+    if not rule_ids or any(rule_id not in available_ids for rule_id in rule_ids):
+        raise HTTPException(status_code=400, detail="Wybierz co najmniej jedną dostępną zasadę")
+    return rule_ids
 
 
 def _defaults(specs: tuple[RuleSpec, ...]) -> dict:
@@ -134,15 +188,60 @@ def results(
     page: str = "1",
     page_size: str = "100",
 ):
+    return _results(
+        response, resource_type, graph_id, created_from, created_to, trench_id,
+        include_harris, rules, only_failed, sort, page, page_size,
+    )
+
+
+@app.post("/api/results")
+async def search_results(request: Request, response: Response):
+    """Verify a complete Arches search result set, not just its visible page."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Niepoprawny JSON") from None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Oczekiwano obiektu JSON")
+    resource_ids = _resource_ids(body)
+    return _results(
+        response,
+        _body_string(body, "resource_type"),
+        _body_string(body, "graph_id"),
+        _body_string(body, "from"),
+        _body_string(body, "to"),
+        _body_string(body, "trench_id"),
+        _body_bool(body, "include_harris"),
+        body.get("rules"),
+        _body_bool(body, "only_failed"),
+        _body_string(body, "sort", "created_desc"),
+        _body_int(body, "page", 1),
+        _body_int(body, "page_size", 100),
+        resource_ids,
+    )
+
+
+def _results(
+    response: Response,
+    resource_type: str | None,
+    graph_id: str | None,
+    created_from: str | None,
+    created_to: str | None,
+    trench_id: str | None,
+    include_harris: str | bool,
+    rules: str | list[str] | None,
+    only_failed: str | bool,
+    sort: str,
+    page: str | int,
+    page_size: str | int,
+    resource_ids: frozenset[str] | None = None,
+):
     profile = _profile(resource_type, graph_id)
     specs = _specs(profile)
-    available_ids = {spec.id for spec in specs}
     start, end = _date(created_from, "od"), _date(created_to, "do")
     if start and end and start > end:
         raise HTTPException(status_code=400, detail="Data początkowa jest późniejsza niż końcowa")
-    rule_ids = tuple(dict.fromkeys(rules.split(",") if rules is not None else (spec.id for spec in specs)))
-    if not rule_ids or any(rule_id not in available_ids for rule_id in rule_ids):
-        raise HTTPException(status_code=400, detail="Wybierz co najmniej jedną dostępną zasadę")
+    rule_ids = _rule_ids(rules, specs)
     if sort not in SORTS:
         raise HTTPException(status_code=400, detail="Nieznane sortowanie")
     query = ReportQuery(
@@ -155,6 +254,7 @@ def results(
         sort=sort,
         page=_positive_int(page, "page"),
         page_size=_positive_int(page_size, "page_size", maximum=100),
+        resource_ids=resource_ids,
     )
     snapshot = _snapshot(profile)
     if query.trench_id and query.trench_id not in snapshot.related_resources.get("trench", {}):
