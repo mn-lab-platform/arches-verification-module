@@ -89,6 +89,14 @@ tbody tr.row--fail th:first-child{box-shadow:inset 4px 0 #d65b4e}
 .loading-panel{padding:25px;color:#617a7d}
 .loading-strip{margin-top:12px;border-radius:8px;padding:10px 14px;background:#e5f2f1;color:#28666b;font-size:12px;font-weight:800}
 .error-banner{margin:0 0 16px;padding:13px 16px;border:1px solid #eeb3aa;border-radius:9px;background:#fff2ef;color:#ad3b30;font-size:13px;font-weight:700}
+.search-scope-panel{margin-top:16px;margin-bottom:16px}
+.search-scope-actions{display:flex;align-items:center;gap:18px;flex-wrap:wrap;color:#5d777a;font-size:13px}
+.secondary-button{border:1px solid #a8cbc8;border-radius:9px;background:#f1faf8;color:#176d73;padding:10px 14px;font-size:13px;font-weight:800}
+.secondary-button:hover{background:#e0f2ef}
+.search-dialog-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(15,39,44,.65);padding:2vh 2vw}
+.search-dialog{height:96vh;display:flex;flex-direction:column;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.25)}
+.search-dialog-topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:10px 16px;border-bottom:1px solid #dce7e5;color:#19343b}
+.search-dialog iframe{width:100%;min-height:0;flex:1;border:0;background:#fff}
 @media(max-width:1100px){.filter-grid{grid-template-columns:repeat(2,1fr)}.rule-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:700px){.page-shell{padding:20px 15px 50px}.page-header{padding-bottom:23px}.eyebrow{margin-top:25px}.controls-panel{padding:20px 17px}.section-heading{display:block}.section-heading p{margin-top:8px}.filter-grid,.rule-grid,.summary-grid{grid-template-columns:1fr 1fr}.scope-actions{display:block}.scope-actions .checkbox-line{margin-top:14px}.rules-heading .rule-actions{margin-top:10px}.form-footer{display:block}.form-footer>span{display:block;margin-top:10px}.table-toolbar{align-items:flex-start}.summary-card{min-height:78px;padding:13px}}
 @media(max-width:470px){.filter-grid,.rule-grid{grid-template-columns:1fr}.summary-card strong{font-size:22px}.page-shell{padding-left:11px;padding-right:11px}.table-toolbar{display:block}.table-toolbar>label:not(.checkbox-line){margin-top:14px}.pagination{display:block}.pagination>div{margin-top:11px}}
