@@ -23,6 +23,8 @@ function StatusCell({ result }: { result: RuleResult }) {
 }
 
 export default function ReportResults({ report, loading, onlyFailed, sort, page, onOnlyFailed, onSort, onPage }: Props) {
+  const hasTrench = report?.model.resource_type === 'context' || report?.model.resource_type === 'special_find';
+  const hasNumber = hasTrench;
   return <section class="results-section" aria-labelledby="results-heading">
     <div class="section-heading results-heading">
       <div><span class="step-label">03 / WYNIKI</span><h2 id="results-heading">Raport weryfikacji</h2></div>
@@ -37,17 +39,17 @@ export default function ReportResults({ report, loading, onlyFailed, sort, page,
       </div>
       {report.gaps.length > 0 && <details class="gap-panel">
         <summary>Luki numeracji: {report.gaps.reduce((sum, gap) => sum + gap.missing_count, 0)} brakujących numerów</summary>
-        <ul>{report.gaps.map((gap) => <li key={gap.trench_id}><strong>{gap.trench_name}:</strong> {gap.ranges.map((range) => range.from === range.to ? range.from : `${range.from}–${range.to}`).join(', ')}</li>)}</ul>
+        <ul>{report.gaps.map((gap) => <li key={`${gap.rule_id}-${gap.group_name}`}><strong>{gap.rule_label} · {gap.group_name}:</strong> {gap.ranges.map((range) => range.from === range.to ? range.from : `${range.from}–${range.to}`).join(', ')}</li>)}</ul>
       </details>}
       <div class="table-toolbar">
         <label class="checkbox-line"><input type="checkbox" checked={onlyFailed} onChange={(event) => onOnlyFailed(event.currentTarget.checked)} /> Tylko z błędami</label>
         <label>Sortuj<select value={sort} onChange={(event) => onSort(event.currentTarget.value)}>{SORTS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
       </div>
       <div class="table-wrap" aria-busy={loading}><table>
-        <thead><tr><th scope="col">Context</th><th scope="col">Dodano</th><th scope="col">Trench</th><th scope="col">Numer</th>{report.rules.map((rule) => <th scope="col" key={rule.id}>{rule.label}</th>)}</tr></thead>
+        <thead><tr><th scope="col">{report.model.name}</th><th scope="col">Dodano</th>{hasTrench && <th scope="col">Trench</th>}{hasNumber && <th scope="col">Numer</th>}{report.rules.map((rule) => <th scope="col" key={rule.id}>{rule.label}</th>)}</tr></thead>
         <tbody>{report.rows.map((row) => <tr key={row.resource_id} class={row.overall_status === 'fail' ? 'row--fail' : ''}>
           <th scope="row"><a href={row.resource_url}>{row.name}</a>{row.source === 'harris' && <small>Dołączony przez Harris</small>}</th>
-          <td>{row.created_at.slice(0, 16).replace('T', ' ')}</td><td>{row.trench_name}</td><td>{row.number ?? '—'}</td>
+          <td>{row.created_at.slice(0, 16).replace('T', ' ')}</td>{hasTrench && <td>{row.trench_name}</td>}{hasNumber && <td>{row.number ?? '—'}</td>}
           {report.rules.map((rule) => <td key={rule.id}><StatusCell result={row.results[rule.id]} /></td>)}
         </tr>)}</tbody>
       </table>{report.rows.length === 0 && <p class="empty-state">Brak rekordów dla wybranych filtrów.</p>}</div>

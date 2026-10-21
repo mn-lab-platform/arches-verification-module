@@ -25,14 +25,14 @@ export default function FilterPanel({ options, filters, loading, onChange, onSub
       <div class="filter-grid">
         <label>Data od<input type="date" value={filters.from} onInput={(event) => update({ from: event.currentTarget.value })} /></label>
         <label>Data do<input type="date" value={filters.to} onInput={(event) => update({ to: event.currentTarget.value })} /></label>
-        <label>Trench<select value={filters.trenchId} onChange={(event) => update({ trenchId: event.currentTarget.value })}>
+        {options.trenches.length > 0 && <label>Trench<select value={filters.trenchId} onChange={(event) => update({ trenchId: event.currentTarget.value })}>
           <option value="">Wszystkie trenches</option>
           {options.trenches.map((trench) => <option key={trench.id} value={trench.id}>{trench.name}</option>)}
-        </select></label>
+        </select></label>}
       </div>
       <div class="scope-actions">
         <button type="button" class="text-button" onClick={() => update({ from: '', to: '' })}>Wyczyść daty — pokaż całą historię</button>
-        <label class="checkbox-line"><input type="checkbox" checked={filters.includeHarris} onChange={(event) => update({ includeHarris: event.currentTarget.checked })} /> Dołącz Context powiązane przez Harris</label>
+        {options.model.resource_type === 'context' && <label class="checkbox-line"><input type="checkbox" checked={filters.includeHarris} onChange={(event) => update({ includeHarris: event.currentTarget.checked })} /> Dołącz Context powiązane przez Harris</label>}
       </div>
       <div class="section-heading rules-heading">
         <div><span class="step-label">04 / ZASADY</span><h2>Co sprawdzić?</h2></div>

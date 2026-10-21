@@ -28,10 +28,11 @@ export type ReportRow = {
 };
 
 export type Report = {
+  model: ResourceModel;
   generated_at: string;
   rules: { id: string; label: string }[];
   summary: { base_count: number; total_scope: number; passed: number; failed: number };
-  gaps: { trench_id: string; trench_name: string; missing_count: number; ranges: { from: number; to: number }[] }[];
+  gaps: { rule_id: string; rule_label: string; group_name: string; trench_id: string | null; trench_name: string; missing_count: number; ranges: { from: number; to: number }[] }[];
   rows: ReportRow[];
   page: number;
   pages: number;

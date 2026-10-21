@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .profiles import ResourceProfile
-from .types import NodeDefinition, RelationState, ResourceFact, ResourceSnapshot
+from .types import NodeDefinition, RelationState, ResourceFact, ResourceSnapshot, SpatialMatch
 
 
 class DataModelError(RuntimeError):
@@ -94,9 +94,10 @@ def build_resource_snapshot(
     resources: list[dict[str, Any]],
     tiles: list[dict[str, Any]],
     generated_at: str | None = None,
+    valid_resource_ids: set[str] | None = None,
 ) -> ResourceSnapshot:
     """Reduce Arches rows to logical fields, relations and filled-field states."""
-    expected_graphs = {profile.graph_id, *(relation.graph_id for relation in profile.related_graphs.values())}
+    expected_graphs = {profile.graph_id, *(relation.graph_id for relation in profile.related_graphs.values() if relation.graph_id)}
     available_graphs = {graph["graphid"] for graph in graphs if graph["is_active"]}
     missing_graphs = expected_graphs - available_graphs
     if missing_graphs:
@@ -116,6 +117,7 @@ def build_resource_snapshot(
         *profile.completeness_excluded_roots.values(),
         *profile.completeness_optional_fields.values(),
         *(relation.node_id for relation in profile.related_graphs.values() if relation.direction == "outgoing"),
+        *(node_id for alias, node_id in profile.spatial_nodes.items() if alias == "self"),
     }
     missing_nodes = expected_nodes - node_definitions.keys()
     if missing_nodes:
@@ -127,6 +129,7 @@ def build_resource_snapshot(
         resource_id = row["resourceinstanceid"]
         resources_by_graph[row["graphid"]][resource_id] = row
         by_resource[resource_id] = row
+    all_valid_ids = valid_resource_ids if valid_resource_ids is not None else set(by_resource)
 
     main_rows = resources_by_graph.get(profile.graph_id, {})
     main_ids = set(main_rows)
@@ -178,7 +181,7 @@ def build_resource_snapshot(
                     current_relation = current["relations"][relation_name]
                     current_relation["target_ids"].update(targets)
                     current_relation["valid_target_ids"].update(
-                        targets & resources_by_graph.get(relation.graph_id, {}).keys()
+                        targets & (all_valid_ids if relation.graph_id is None else resources_by_graph.get(relation.graph_id, {}).keys())
                     )
             continue
 
@@ -211,7 +214,7 @@ def build_resource_snapshot(
             resource_id: resource_name(row)
             for resource_id, row in resources_by_graph.get(relation.graph_id, {}).items()
         }
-        for name, relation in profile.related_graphs.items()
+        for name, relation in profile.related_graphs.items() if relation.graph_id is not None
     }
     return ResourceSnapshot(
         resource_type=profile.id,
@@ -238,13 +241,70 @@ def _database_config() -> dict[str, Any]:
     }
 
 
+def _load_spatial_matches(connection: Any, profile: ResourceProfile, snapshot: ResourceSnapshot) -> None:
+    """Check linked geometries in PostGIS without putting coordinates in Redis."""
+    if not profile.spatial_nodes:
+        return
+    if "self" not in profile.spatial_nodes:
+        raise DataModelError(f"Brak węzła geometrii źródłowej: {profile.label}")
+
+    pairs = [
+        (fact.resource_id, target_id, relation_name, profile.spatial_nodes["self"], target_node)
+        for fact in snapshot.resources.values()
+        for relation_name, target_node in profile.spatial_nodes.items()
+        if relation_name != "self"
+        for target_id in fact.relations[relation_name].valid_target_ids
+    ]
+    if not pairs:
+        return
+
+    columns = [list(column) for column in zip(*pairs)]
+    rows = connection.execute(
+        """
+        WITH pairs AS (
+            SELECT * FROM unnest(%s::uuid[], %s::uuid[], %s::text[], %s::uuid[], %s::uuid[])
+                AS p(source_id, target_id, relation_name, source_node, target_node)
+        )
+        SELECT source_id::text, target_id::text, relation_name,
+            EXISTS (
+                SELECT 1 FROM geojson_geometries s
+                WHERE s.resourceinstanceid = p.source_id AND s.nodeid = p.source_node
+            ) AS source_has_geometry,
+            EXISTS (
+                SELECT 1 FROM geojson_geometries t
+                WHERE t.resourceinstanceid = p.target_id AND t.nodeid = p.target_node
+            ) AS target_has_geometry,
+            NOT EXISTS (
+                SELECT 1 FROM geojson_geometries s
+                WHERE s.resourceinstanceid = p.source_id AND s.nodeid = p.source_node
+                    AND NOT EXISTS (
+                        SELECT 1 FROM geojson_geometries t
+                        WHERE t.resourceinstanceid = p.target_id AND t.nodeid = p.target_node
+                            AND ST_Within(s.geom, t.geom)
+                    )
+            ) AS is_within
+        FROM pairs p
+        """,
+        columns,
+    ).fetchall()
+    for row in rows:
+        snapshot.resources[row["source_id"]].spatial.setdefault(row["relation_name"], []).append(
+            SpatialMatch(
+                target_id=row["target_id"],
+                source_has_geometry=row["source_has_geometry"],
+                target_has_geometry=row["target_has_geometry"],
+                within=row["is_within"],
+            )
+        )
+
+
 def load_resource_snapshot(profile: ResourceProfile) -> ResourceSnapshot:
     """Read one profiled resource type from a consistent PostgreSQL snapshot."""
     import psycopg
 
     graph_ids = tuple(dict.fromkeys([
         profile.graph_id,
-        *(relation.graph_id for relation in profile.related_graphs.values()),
+        *(relation.graph_id for relation in profile.related_graphs.values() if relation.graph_id),
     ]))
     placeholders = ",".join(["%s"] * len(graph_ids))
     with psycopg.connect(**_database_config()) as connection:
@@ -268,10 +328,18 @@ def load_resource_snapshot(profile: ResourceProfile) -> ResourceSnapshot:
                 f"FROM resource_instances WHERE graphid IN ({placeholders})",
                 graph_ids,
             ).fetchall()
+            valid_resource_ids = (
+                {row["resourceinstanceid"] for row in connection.execute("SELECT resourceinstanceid::text FROM resource_instances")}
+                if any(relation.graph_id is None for relation in profile.related_graphs.values()) else None
+            )
             tiles = connection.execute(
                 "SELECT resourceinstanceid::text, nodegroupid::text, tiledata FROM tiles "
                 "WHERE resourceinstanceid IN (SELECT resourceinstanceid FROM resource_instances "
                 f"WHERE graphid IN ({placeholders})) ORDER BY sortorder, tileid",
                 graph_ids,
             ).fetchall()
-    return build_resource_snapshot(profile, graphs, nodes, edges, resources, tiles)
+            snapshot = build_resource_snapshot(
+                profile, graphs, nodes, edges, resources, tiles, valid_resource_ids=valid_resource_ids,
+            )
+            _load_spatial_matches(connection, profile, snapshot)
+    return snapshot

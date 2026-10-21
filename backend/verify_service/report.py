@@ -3,10 +3,11 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+import json
 from zoneinfo import ZoneInfo
 
 from .profiles import ResourceProfile
-from .repository import integer_number
+from .repository import integer_number, localized
 from .rule_engine import EvaluationResult, evaluate_rules
 from .rules import RuleSpec
 from .types import ResourceFact, ResourceSnapshot
@@ -76,19 +77,31 @@ def _sort_rows(rows: list[dict], sort: str) -> None:
         rows.sort(key=lambda row: (row["created_at"], row["resource_id"]), reverse=True)
 
 
-def _gap_rows(evaluation: EvaluationResult, snapshot: ResourceSnapshot) -> list[dict]:
+def _group_label(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return value
+    return localized(parsed) if isinstance(parsed, dict) else value
+
+
+def _gap_rows(evaluation: EvaluationResult, snapshot: ResourceSnapshot, specs: tuple[RuleSpec, ...]) -> list[dict]:
     by_group: dict[tuple[str, tuple[str, ...]], list[dict[str, int]]] = defaultdict(list)
     for rule_id, gaps in evaluation.gaps.items():
         for gap in gaps:
             by_group[(rule_id, gap.group)].append({"from": gap.start, "to": gap.end})
     trenches = snapshot.related_resources.get("trench", {})
+    by_rule = {spec.id: spec for spec in specs}
     rows = []
     for (rule_id, group), ranges in by_group.items():
-        trench_id = group[0] if len(group) == 1 else None
-        group_name = trenches.get(trench_id, trench_id) if trench_id else " / ".join(group)
+        spec = by_rule[rule_id]
+        trench_id = group[0] if len(group) == 1 and getattr(spec, "group_by", ()) == ("trench",) else None
+        group_name = trenches.get(trench_id, trench_id) if trench_id else " / ".join(map(_group_label, group)) or "Wszystkie zasoby"
         rows.append({
             "rule_id": rule_id,
+            "rule_label": spec.label,
             "group": list(group),
+            "group_name": group_name,
             "trench_id": trench_id,
             "trench_name": group_name,
             "ranges": ranges,
@@ -174,7 +187,7 @@ def build_report(
             "failed": failed_count,
             "not_applicable": total_scope - passed_count - failed_count,
         },
-        "gaps": _gap_rows(evaluation, snapshot),
+        "gaps": _gap_rows(evaluation, snapshot, selected_specs),
         "page": query.page,
         "page_size": query.page_size,
         "pages": (total + query.page_size - 1) // query.page_size,

@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 import json
+import re
 
 from .profiles import ResourceProfile
 from .repository import integer_number, localized
@@ -12,6 +13,7 @@ from .rules import (
     RequiredFieldsRuleSpec,
     RequiredRelationRuleSpec,
     RuleSpec,
+    SpatialWithinRuleSpec,
     UniqueNumberRuleSpec,
     verdict,
 )
@@ -63,6 +65,36 @@ def _relation_rule(
         if valid < actual:
             return verdict("fail", f"Powiązanie wskazuje nieistniejący zasób: {spec.label}")
         return verdict("fail", f"Niepoprawna liczba powiązań ({actual}): {spec.label}")
+
+    return CompiledRule(spec.id, evaluate)
+
+
+def _spatial_within_rule(
+    spec: SpatialWithinRuleSpec,
+    profile: ResourceProfile,
+    snapshot: ResourceSnapshot,
+    base_ids: set[str],
+    visible_ids: set[str],
+) -> CompiledRule:
+    if spec.relation not in profile.related_graphs or not {"self", spec.relation}.issubset(profile.spatial_nodes):
+        raise ValueError(f"Brak konfiguracji geometrii dla reguły {spec.id}")
+
+    def evaluate(fact: ResourceFact) -> Verdict:
+        relation = fact.relations[spec.relation]
+        if not relation.target_ids:
+            return verdict("fail", f"Brak powiązania: {spec.relation}")
+        if len(relation.valid_target_ids) < len(relation.target_ids):
+            return verdict("fail", f"Powiązanie wskazuje nieistniejący zasób: {spec.relation}")
+        matches = fact.spatial.get(spec.relation, [])
+        if len(matches) != len(relation.valid_target_ids):
+            return verdict("fail", f"Brak wyniku porównania geometrii: {spec.relation}")
+        if any(not match.source_has_geometry for match in matches):
+            return verdict("fail", f"Brak geometrii zasobu: {profile.label}")
+        if any(not match.target_has_geometry for match in matches):
+            return verdict("fail", f"Brak geometrii powiązanego {spec.relation}")
+        if any(not match.within for match in matches):
+            return verdict("fail", f"Zasób leży poza powiązanym {spec.relation}")
+        return verdict("pass")
 
     return CompiledRule(spec.id, evaluate)
 
@@ -145,6 +177,7 @@ def _group_value(fact: ResourceFact, profile: ResourceProfile, alias: str) -> st
     return json.dumps(value, ensure_ascii=False, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
 
 
+
 def _number_label(snapshot: ResourceSnapshot, profile: ResourceProfile, alias: str) -> str:
     return localized(snapshot.nodes[profile.fields[alias]].name) or alias
 
@@ -155,6 +188,7 @@ def _number_scope(
     value_fields: tuple[str, ...],
     group_by: tuple[str, ...],
     cohort_ids: set[str],
+    number_pattern: str | None = None,
 ) -> tuple[dict[str, tuple[tuple[str, ...], tuple[int, ...]]], dict[str, str]]:
     if not value_fields or set(value_fields) - profile.fields.keys():
         raise ValueError(f"Nieznane pola numeracji: {value_fields}")
@@ -167,7 +201,11 @@ def _number_scope(
         numbers = []
         for alias in value_fields:
             values = fact.fields.get(alias, [])
-            number = integer_number(values[0]) if len(values) == 1 else None
+            if len(values) == 1 and number_pattern is not None:
+                match = re.fullmatch(number_pattern, str(values[0]).strip())
+                number = int(match.group(1)) if match else None
+            else:
+                number = integer_number(values[0]) if len(values) == 1 else None
             if number is None:
                 errors[resource_id] = f"Brak jednego poprawnego, całkowitego {_number_label(snapshot, profile, alias)}"
                 break
@@ -189,7 +227,7 @@ def _number_rule_scope(
     visible_ids: set[str],
 ) -> tuple[dict[str, tuple[tuple[str, ...], tuple[int, ...]]], dict[str, str]]:
     cohort_ids = base_ids if spec.base_scope_only else visible_ids
-    return _number_scope(profile, snapshot, spec.value_fields, spec.group_by, cohort_ids)
+    return _number_scope(profile, snapshot, spec.value_fields, spec.group_by, cohort_ids, spec.number_pattern)
 
 
 def _unique_rule(
@@ -265,6 +303,7 @@ RULE_FACTORIES = {
     RequiredFieldsRuleSpec: _fields_rule,
     UniqueNumberRuleSpec: _unique_rule,
     ContinuousNumberRuleSpec: _continuous_rule,
+    SpatialWithinRuleSpec: _spatial_within_rule,
 }
 
 

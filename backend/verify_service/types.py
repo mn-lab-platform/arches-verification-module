@@ -21,6 +21,14 @@ class RelationState:
 
 
 @dataclass
+class SpatialMatch:
+    target_id: str
+    source_has_geometry: bool
+    target_has_geometry: bool
+    within: bool
+
+
+@dataclass
 class ResourceFact:
     resource_id: str
     name: str
@@ -28,6 +36,7 @@ class ResourceFact:
     fields: dict[str, list[Any]] = field(default_factory=dict)
     relations: dict[str, RelationState] = field(default_factory=dict)
     group_values: dict[str, list[dict[str, bool]]] = field(default_factory=dict)
+    spatial: dict[str, list[SpatialMatch]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ResourceFact":
@@ -38,6 +47,7 @@ class ResourceFact:
             fields=data.get("fields", {}),
             relations={key: RelationState.from_dict(value) for key, value in data.get("relations", {}).items()},
             group_values=data.get("group_values", {}),
+            spatial={key: [SpatialMatch(**match) for match in matches] for key, matches in data.get("spatial", {}).items()},
         )
 
 
