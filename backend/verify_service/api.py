@@ -1,14 +1,28 @@
 """Same-origin API and static Astro build for /verify/."""
 
 import logging
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 
+from .auth import require_editor
 from .cache import cached_resource_snapshot
+from .custom_rules import (
+    CustomRule,
+    RuleDefinitionError,
+    RuleNotFoundError,
+    RuleStoreError,
+    build_custom_rule,
+    extend_profile,
+    new_rule_id,
+    rule_kinds,
+    rule_store,
+)
 from .profiles import CONTEXT_PROFILE, PROFILES, ResourceProfile
 from .report import SORTS, ReportQuery, build_report
 from .repository import load_resource_snapshot
@@ -34,8 +48,44 @@ def _profile(resource_type: str | None, graph_id: str | None) -> ResourceProfile
     return profile
 
 
-def _specs(profile: ResourceProfile) -> tuple[RuleSpec, ...]:
-    return RULE_SPECS_BY_RESOURCE_TYPE[profile.id]
+def _store_call(action: Callable[..., Any], *args: Any) -> Any:
+    """Map rule storage errors to HTTP responses."""
+    try:
+        return action(*args)
+    except RuleDefinitionError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+    except RuleNotFoundError:
+        raise HTTPException(status_code=404, detail="Nie znaleziono zasady") from None
+    except RuleStoreError:
+        logger.exception("Custom rules file is unavailable")
+        raise HTTPException(status_code=503, detail="Nie udało się odczytać lub zapisać zasad użytkownika") from None
+
+
+def _rule_set(profile: ResourceProfile) -> tuple[ResourceProfile, tuple[RuleSpec, ...], set[str]]:
+    """Builtin plus custom rules, and the profile extended with the fields the custom ones read."""
+    custom = _store_call(rule_store().rules, profile.id)
+    specs = RULE_SPECS_BY_RESOURCE_TYPE[profile.id] + tuple(rule.spec for rule in custom)
+    return extend_profile(profile, custom), specs, {rule.spec.id for rule in custom}
+
+
+def _builder_options(profile: ResourceProfile) -> dict:
+    try:
+        return load_rule_builder_options(profile)
+    except Exception:
+        logger.exception("Could not read rule builder metadata for %s", profile.id)
+        raise HTTPException(status_code=503, detail="Definicja grafu Arches jest chwilowo niedostępna") from None
+
+
+def _definition_profile(data: Any) -> ResourceProfile:
+    resource_type = data.get("resource_type") if isinstance(data, dict) else None
+    if not isinstance(resource_type, str) or not resource_type:
+        raise HTTPException(status_code=400, detail="Podaj resource_type zasady")
+    return _profile(resource_type, None)
+
+
+def _built_rule(data: Any, profile: ResourceProfile, rule_id: str, created_at: str | None = None) -> CustomRule:
+    options = _builder_options(profile)
+    return _store_call(build_custom_rule, data, options, rule_id, created_at)
 
 
 def _model(profile: ResourceProfile) -> dict[str, str]:
@@ -103,14 +153,16 @@ def catalog(response: Response):
 @app.get("/api/options")
 def options(response: Response, resource_type: str | None = None, graph_id: str | None = None):
     """Load choices for a selected profile; default Context supports the current UI."""
-    profile = _profile(resource_type, graph_id)
-    specs = _specs(profile)
+    profile, specs, custom_ids = _rule_set(_profile(resource_type, graph_id))
     snapshot = _snapshot(profile)
     trenches = snapshot.related_resources.get("trench", {})
     response.headers["Cache-Control"] = "no-store"
     return {
         "model": _model(profile),
-        "rules": [{"id": spec.id, "label": spec.label, "description": spec.description} for spec in specs],
+        "rules": [
+            {"id": spec.id, "label": spec.label, "description": spec.description, "custom": spec.id in custom_ids}
+            for spec in specs
+        ],
         "trenches": [
             {"id": resource_id, "name": name}
             for resource_id, name in sorted(trenches.items(), key=lambda item: item[1].casefold())
@@ -122,15 +174,57 @@ def options(response: Response, resource_type: str | None = None, graph_id: str 
 
 @app.get("/api/rule-builder-options")
 def rule_builder_options(response: Response, resource_type: str):
-    """Expose compatible Arches graph nodes for future custom rule forms."""
-    profile = _profile(resource_type, None)
-    try:
-        result = load_rule_builder_options(profile)
-    except Exception:
-        logger.exception("Could not read rule builder metadata for %s", profile.id)
-        raise HTTPException(status_code=503, detail="Definicja grafu Arches jest chwilowo niedostępna") from None
+    """Expose compatible Arches graph nodes and the form schema of each custom rule kind."""
+    result = _builder_options(_profile(resource_type, None))
     response.headers["Cache-Control"] = "no-store"
-    return result
+    return {**result, "kinds": rule_kinds()}
+
+
+@app.get("/api/rules")
+def list_rules(response: Response, resource_type: str):
+    """Builtin rules are read-only; custom rules come with their full definitions."""
+    profile = _profile(resource_type, None)
+    custom = _store_call(rule_store().rules, profile.id)
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "model": _model(profile),
+        "builtin": [
+            {"id": spec.id, "label": spec.label, "description": spec.description, "kind": spec.kind}
+            for spec in RULE_SPECS_BY_RESOURCE_TYPE[profile.id]
+        ],
+        "custom": [rule.to_record() for rule in custom],
+    }
+
+
+@app.post("/api/rules", status_code=201)
+def create_rule(request: Request, response: Response, data: Any = Body(...)):
+    profile = _definition_profile(data)
+    require_editor(request, profile)
+    rule = _built_rule(data, profile, new_rule_id())
+    _store_call(rule_store().add, rule)
+    response.headers["Cache-Control"] = "no-store"
+    return rule.to_record()
+
+
+@app.put("/api/rules/{rule_id}")
+def update_rule(rule_id: str, request: Request, response: Response, data: Any = Body(...)):
+    existing = _store_call(rule_store().get, rule_id)
+    profile = _profile(existing.spec.resource_type, None)
+    require_editor(request, profile)
+    if _definition_profile(data).id != profile.id:
+        raise HTTPException(status_code=400, detail="Nie można zmienić typu zasobu istniejącej zasady")
+    rule = _built_rule(data, profile, rule_id, existing.created_at)
+    _store_call(rule_store().replace, rule)
+    response.headers["Cache-Control"] = "no-store"
+    return rule.to_record()
+
+
+@app.delete("/api/rules/{rule_id}", status_code=204)
+def delete_rule(rule_id: str, request: Request):
+    existing = _store_call(rule_store().get, rule_id)
+    require_editor(request, _profile(existing.spec.resource_type, None))
+    _store_call(rule_store().delete, rule_id)
+    return Response(status_code=204)
 
 
 @app.get("/api/results")
@@ -148,8 +242,7 @@ def results(
     page: str = "1",
     page_size: str = "100",
 ):
-    profile = _profile(resource_type, graph_id)
-    specs = _specs(profile)
+    profile, specs, _ = _rule_set(_profile(resource_type, graph_id))
     available_ids = {spec.id for spec in specs}
     start, end = _date(created_from, "od"), _date(created_to, "do")
     if start and end and start > end:

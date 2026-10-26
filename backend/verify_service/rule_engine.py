@@ -203,7 +203,8 @@ def _number_scope(
             values = fact.fields.get(alias, [])
             if len(values) == 1 and number_pattern is not None:
                 match = re.fullmatch(number_pattern, str(values[0]).strip())
-                number = int(match.group(1)) if match else None
+                # A custom pattern's group may be empty or non-numeric; that is an invalid value, not a crash.
+                number = integer_number(match.group(1)) if match else None
             else:
                 number = integer_number(values[0]) if len(values) == 1 else None
             if number is None:
