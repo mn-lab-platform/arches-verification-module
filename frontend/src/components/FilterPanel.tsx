@@ -18,7 +18,7 @@ export default function FilterPanel({ options, filters, loading, onChange, onSub
 
   return <section class="panel controls-panel" aria-labelledby="filters-heading">
     <div class="section-heading">
-      <div><span class="step-label">03 / ZAKRES</span><h2 id="filters-heading">Wybierz rekordy</h2></div>
+      <div><span class="step-label">01 / ZAKRES</span><h2 id="filters-heading">Wybierz rekordy</h2></div>
       <p>Daty dotyczą momentu dodania zasobu do Arches.</p>
     </div>
     <form onSubmit={onSubmit}>
@@ -35,7 +35,7 @@ export default function FilterPanel({ options, filters, loading, onChange, onSub
         {options.model.resource_type === 'context' && <label class="checkbox-line"><input type="checkbox" checked={filters.includeHarris} onChange={(event) => update({ includeHarris: event.currentTarget.checked })} /> Dołącz Context powiązane przez Harris</label>}
       </div>
       <div class="section-heading rules-heading">
-        <div><span class="step-label">04 / ZASADY</span><h2>Co sprawdzić?</h2></div>
+        <div><span class="step-label">02 / ZASADY</span><h2>Co sprawdzić?</h2></div>
         <div class="rule-actions">
           <button type="button" class="text-button" onClick={() => update({ rules: options.rules.map((rule) => rule.id) })}>Zaznacz wszystkie</button>
           <button type="button" class="text-button" onClick={() => update({ rules: [] })}>Wyczyść</button>

@@ -59,14 +59,8 @@ export const SORTS = [
   ['failures_desc', 'Najwięcej błędów'],
 ] as const;
 
-export async function fetchJson<T>(url: string, signal?: AbortSignal, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set('Accept', 'application/json');
-  const response = await fetch(url, {
-    ...init,
-    signal,
-    headers,
-  });
+export async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal, headers: { Accept: 'application/json' } });
   const payload = response.headers.get("content-type")?.includes("application/json")
     ? await response.json() as { detail?: string }
     : {};

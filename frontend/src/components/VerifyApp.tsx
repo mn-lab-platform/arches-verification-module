@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
 import FilterPanel from './FilterPanel';
 import ReportResults from './ReportResults';
@@ -12,10 +12,6 @@ export default function VerifyApp() {
   const [options, setOptions] = useState<Options | null>(null);
   const [draft, setDraft] = useState<Filters | null>(null);
   const [applied, setApplied] = useState<Filters | null>(null);
-  const [searchIds, setSearchIds] = useState<string[] | null>(null);
-  const [appliedSearchIds, setAppliedSearchIds] = useState<string[] | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchFrame = useRef<HTMLIFrameElement>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState('created_desc');
@@ -73,35 +69,21 @@ export default function VerifyApp() {
   useEffect(() => {
     if (!applied || !options) return;
     const controller = new AbortController();
-    const fields = {
+    const params = new URLSearchParams({
       resource_type: options.model.resource_type,
       from: applied.from,
       to: applied.to,
       trench_id: applied.trenchId,
-      include_harris: applied.includeHarris,
-      rules: applied.rules,
-      only_failed: onlyFailed,
+      include_harris: String(applied.includeHarris),
+      rules: applied.rules.join(','),
+      only_failed: String(onlyFailed),
       sort,
-      page,
-      page_size: 100,
-    };
+      page: String(page),
+      page_size: '100',
+    });
     setLoading(true);
     setError('');
-    const request = appliedSearchIds === null
-      ? fetchJson<Report>(`${API_BASE}results?${new URLSearchParams({
-          ...fields,
-          include_harris: String(fields.include_harris),
-          rules: fields.rules.join(','),
-          only_failed: String(fields.only_failed),
-          page: String(fields.page),
-          page_size: String(fields.page_size),
-        })}`, controller.signal)
-      : fetchJson<Report>(`${API_BASE}results`, controller.signal, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...fields, resource_ids: appliedSearchIds }),
-        });
-    request
+    fetchJson<Report>(`${API_BASE}results?${params}`, controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
         setReport(value);
@@ -114,35 +96,13 @@ export default function VerifyApp() {
         }
       });
     return () => controller.abort();
-  }, [applied, appliedSearchIds, options, page, sort, onlyFailed]);
-
-  useEffect(() => {
-    if (!searchOpen || !options) return;
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || event.source !== searchFrame.current?.contentWindow) return;
-      const data = event.data;
-      if (data?.type !== 'verify-search:applied' || data.graphId !== options.model.graph_id) return;
-      if (!Array.isArray(data.resourceIds) || data.total !== data.resourceIds.length ||
-          !data.resourceIds.every((id: unknown) => typeof id === 'string')) return;
-      setSearchIds(data.resourceIds);
-      setApplied(null);
-      setAppliedSearchIds(null);
-      setReport(null);
-      setPage(1);
-      setSearchOpen(false);
-    };
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, [searchOpen, options]);
+  }, [applied, options, page, sort, onlyFailed]);
 
   function selectResource(resourceType: string) {
     setSelectedResource(resourceType);
     setOptions(null);
     setDraft(null);
     setApplied(null);
-    setSearchIds(null);
-    setAppliedSearchIds(null);
-    setSearchOpen(false);
     setReport(null);
     setPage(1);
     setSort('created_desc');
@@ -165,7 +125,6 @@ export default function VerifyApp() {
     setReport(null);
     setPage(1);
     setApplied({ ...draft, rules: [...draft.rules] });
-    setAppliedSearchIds(searchIds === null ? null : [...searchIds]);
   }
 
   if (!catalog) {
@@ -194,22 +153,6 @@ export default function VerifyApp() {
       {error}
       {selectedResource && !options && <button type="button" onClick={() => setOptionsRetry((value) => value + 1)}>Ponów</button>}
     </div>}
-    {options && <section class="panel controls-panel search-scope-panel" aria-labelledby="search-scope-heading">
-      <div class="section-heading">
-        <div><span class="step-label">02 / WYSZUKIWANIE</span><h2 id="search-scope-heading">Wyszukiwanie zaawansowane</h2></div>
-        <p>Wyniki wyszukiwania połączą się z datami i Trench poniżej.</p>
-      </div>
-      <div class="search-scope-actions">
-        <button type="button" class="secondary-button" onClick={() => setSearchOpen(true)}>Otwórz wyszukiwanie</button>
-        <span role="status">{searchIds === null ? 'Bez dodatkowego filtra — wszystkie rekordy' : `${searchIds.length} pasujących rekordów z wyszukiwania`}</span>
-        {searchIds !== null && <button type="button" class="text-button" onClick={() => {
-          setSearchIds(null);
-          setApplied(null);
-          setAppliedSearchIds(null);
-          setReport(null);
-        }}>Wyczyść wyszukiwanie</button>}
-      </div>
-    </section>}
     {options && draft && <FilterPanel options={options} filters={draft} loading={loading} onChange={setDraft} onSubmit={apply} />}
     {options && applied && <ReportResults
       report={report}
@@ -221,18 +164,5 @@ export default function VerifyApp() {
       onSort={(value) => { setSort(value); setPage(1); }}
       onPage={setPage}
     />}
-    {searchOpen && options && <div class="search-dialog-backdrop" role="presentation">
-      <section class="search-dialog" role="dialog" aria-modal="true" aria-label="Wyszukiwanie zaawansowane">
-        <div class="search-dialog-topbar">
-          <strong>Wybierz rekordy do weryfikacji</strong>
-          <button type="button" class="secondary-button" onClick={() => setSearchOpen(false)}>Zamknij</button>
-        </div>
-        <iframe
-          ref={searchFrame}
-          title="Wyszukiwanie zaawansowane Arches"
-          src={`/verify-search/?graph_id=${encodeURIComponent(options.model.graph_id)}`}
-        />
-      </section>
-    </div>}
   </>;
 }
