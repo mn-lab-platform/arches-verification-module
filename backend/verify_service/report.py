@@ -24,7 +24,6 @@ class ReportQuery:
     sort: str = "created_desc"
     page: int = 1
     page_size: int = 100
-    resource_ids: frozenset[str] | None = None
 
 
 SORTS = {
@@ -121,8 +120,7 @@ def build_report(
     trenches = snapshot.related_resources.get("trench", {})
     base_ids = {
         fact.resource_id for fact in snapshot.resources.values()
-        if (query.resource_ids is None or fact.resource_id in query.resource_ids)
-        and (query.created_from is None or _created_date(fact.created_at) >= query.created_from)
+        if (query.created_from is None or _created_date(fact.created_at) >= query.created_from)
         and (query.created_to is None or _created_date(fact.created_at) <= query.created_to)
         and (query.trench_id is None or _trench_id(fact) == query.trench_id)
     }
