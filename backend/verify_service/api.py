@@ -12,6 +12,7 @@ from .cache import cached_resource_snapshot
 from .profiles import CONTEXT_PROFILE, PROFILES, ResourceProfile
 from .report import SORTS, ReportQuery, build_report
 from .repository import load_resource_snapshot
+from .rule_builder_options import load_rule_builder_options
 from .rules import RULE_SPECS_BY_RESOURCE_TYPE, RuleSpec
 from .types import ResourceSnapshot
 
@@ -117,6 +118,19 @@ def options(response: Response, resource_type: str | None = None, graph_id: str 
         "defaults": _defaults(specs),
         "generated_at": snapshot.generated_at,
     }
+
+
+@app.get("/api/rule-builder-options")
+def rule_builder_options(response: Response, resource_type: str):
+    """Expose compatible Arches graph nodes for future custom rule forms."""
+    profile = _profile(resource_type, None)
+    try:
+        result = load_rule_builder_options(profile)
+    except Exception:
+        logger.exception("Could not read rule builder metadata for %s", profile.id)
+        raise HTTPException(status_code=503, detail="Definicja grafu Arches jest chwilowo niedostępna") from None
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @app.get("/api/results")
