@@ -1,10 +1,12 @@
 """Five-minute Redis snapshots, keyed by resource profile."""
 
+import hashlib
 import json
 import logging
 import os
 import zlib
 from collections.abc import Callable
+from dataclasses import asdict
 from typing import Any
 
 from .constants import SNAPSHOT_CACHE_PREFIX, SNAPSHOT_TTL_SECONDS
@@ -12,6 +14,18 @@ from .profiles import ResourceProfile
 from .types import ResourceSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+def profile_fingerprint(profile: ResourceProfile) -> str:
+    """Custom rules extend profiles, so the snapshot key follows everything the loader reads."""
+    shape = {
+        "fields": dict(profile.fields),
+        "related_graphs": {alias: asdict(relation) for alias, relation in profile.related_graphs.items()},
+        "completeness_excluded_roots": dict(profile.completeness_excluded_roots),
+        "completeness_optional_fields": dict(profile.completeness_optional_fields),
+        "spatial_nodes": dict(profile.spatial_nodes),
+    }
+    return hashlib.sha256(json.dumps(shape, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
 def cached_resource_snapshot(
@@ -33,7 +47,7 @@ def cached_resource_snapshot(
             logger.warning("Redis unavailable; loading %s from PostgreSQL: %s", profile.id, error)
             return loader(profile)
 
-    key = f"{SNAPSHOT_CACHE_PREFIX}{profile.id}"
+    key = f"{SNAPSHOT_CACHE_PREFIX}{profile.id}:{profile_fingerprint(profile)}"
     try:
         raw = client.get(key)
         if raw:

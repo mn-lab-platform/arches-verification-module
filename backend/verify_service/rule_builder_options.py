@@ -51,6 +51,8 @@ def build_rule_builder_options(profile: ResourceProfile, graphs: list[dict], nod
 
     main_nodes = nodes_by_graph.get(profile.graph_id, [])
     fields = [_field(node) for node in main_nodes if node["datatype"] != "semantic" and node["nodegroupid"]]
+    # Excluding a semantic node skips its whole branch in the completeness rule.
+    completeness_roots = [_field(node) for node in main_nodes if node["nodegroupid"]]
     numbering = [_field(node) for node in main_nodes if node["datatype"] in NUMBER_DATATYPES and node["nodegroupid"]]
     grouping_fields = [_field(node) for node in main_nodes if node["datatype"] in GROUP_DATATYPES and node["nodegroupid"]]
 
@@ -114,13 +116,14 @@ def build_rule_builder_options(profile: ResourceProfile, graphs: list[dict], nod
     }
 
     sort_by_label = lambda item: (item["label"].casefold(), item["node_id"])
-    for choices in (fields, numbering, grouping_fields, geometries["source"]):
+    for choices in (fields, completeness_roots, numbering, grouping_fields, geometries["source"]):
         choices.sort(key=sort_by_label)
     relations.sort(key=lambda item: (item["label"].casefold(), item["direction"], item["node_id"]))
     geometries["targets"].sort(key=lambda item: (item["graph_name"].casefold(), item["label"].casefold()))
     return {
         "model": {"resource_type": profile.id, "graph_id": profile.graph_id, "name": profile.label},
         "fields": fields,
+        "completeness_roots": completeness_roots,
         "numbering": numbering,
         "grouping": {"fields": grouping_fields, "relations": relations},
         "relations": relations,
