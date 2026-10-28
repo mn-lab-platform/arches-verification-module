@@ -142,7 +142,6 @@ def _build_fields(rule_id: str, label: str, description: str, resource_type: str
         rule_id, label, description, resource_type,
         fields=params["fields"],
         excluded_roots=params["excluded_fields"],
-        optional_fields=params["optional_fields"],
         each_repeatable_entry=params["each_repeatable_entry"],
     )
 
@@ -173,7 +172,7 @@ def _build_continuous(rule_id: str, label: str, description: str, resource_type:
 
 _GROUP_BY = Param("group_by", "Grupuj według", "choices", options="grouping", default=())
 _BASE_SCOPE_ONLY = Param("base_scope_only", "Tylko zakres bazowy", "boolean", default=True)
-_NUMBER_PATTERN = Param("number_pattern", "Wzorzec numeru", "pattern", default=None, nullable=True)
+_NUMBER_PATTERN = Param("number_pattern", "Format numeru", "pattern", default=None, nullable=True)
 
 RULE_KINDS: Mapping[str, RuleKind] = MappingProxyType({kind.kind: kind for kind in (
     RuleKind(
@@ -189,19 +188,18 @@ RULE_KINDS: Mapping[str, RuleKind] = MappingProxyType({kind.kind: kind for kind 
     ),
     RuleKind(
         "required_fields", "Kompletność pól",
-        "Wybrane pola (lub wszystkie) są wypełnione, z pominięciem wykluczonych gałęzi.",
+        "Wybrane pola (lub wszystkie) są wypełnione, z pominięciem wskazanych pól.",
         (
             # null means every field of the graph.
             Param("fields", "Pola", "choices", options="fields", default=None, nullable=True, min_items=1),
-            Param("excluded_fields", "Pomiń gałęzie", "choices", options="completeness_roots", default=()),
-            Param("optional_fields", "Pola opcjonalne", "choices", options="fields", default=()),
+            # Excluding a field skips everything below it, so one list covers single fields and groups.
+            Param("excluded_fields", "Pomiń pola", "choices", options="completeness_roots", default=()),
             Param("each_repeatable_entry", "Każdy wpis grupy powtarzalnej", "boolean", default=True),
         ),
         _build_fields,
         lambda spec: {
             "fields": None if spec.fields is None else list(spec.fields),
             "excluded_fields": list(spec.excluded_roots),
-            "optional_fields": list(spec.optional_fields),
             "each_repeatable_entry": spec.each_repeatable_entry,
         },
     ),
@@ -418,14 +416,12 @@ def extend_profile(profile: ResourceProfile, rules: Iterable[CustomRule]) -> Res
     fields = dict(profile.fields)
     related_graphs = dict(profile.related_graphs)
     excluded_roots = dict(profile.completeness_excluded_roots)
-    optional_fields = dict(profile.completeness_optional_fields)
     for rule in rules:
         spec = rule.spec
         related_graphs.update(rule.relations)
         if isinstance(spec, RequiredFieldsRuleSpec):
             fields.update((node_id, node_id) for node_id in spec.fields or ())
             excluded_roots.update((node_id, node_id) for node_id in spec.excluded_roots)
-            optional_fields.update((node_id, node_id) for node_id in spec.optional_fields)
         elif isinstance(spec, (UniqueNumberRuleSpec, ContinuousNumberRuleSpec)):
             fields.update(
                 (node_id, node_id) for node_id in (*spec.value_fields, *spec.group_by)
@@ -436,7 +432,6 @@ def extend_profile(profile: ResourceProfile, rules: Iterable[CustomRule]) -> Res
         fields=MappingProxyType(fields),
         related_graphs=MappingProxyType(related_graphs),
         completeness_excluded_roots=MappingProxyType(excluded_roots),
-        completeness_optional_fields=MappingProxyType(optional_fields),
     )
 
 

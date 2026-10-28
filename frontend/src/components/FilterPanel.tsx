@@ -44,7 +44,10 @@ export default function FilterPanel({ options, filters, loading, onChange, onSub
       <div class="rule-grid">
         {options.rules.map((rule) => <label key={rule.id} class={`rule-choice ${filters.rules.includes(rule.id) ? 'rule-choice--active' : ''}`}>
           <input type="checkbox" checked={filters.rules.includes(rule.id)} onChange={() => toggleRule(rule.id)} />
-          <span><strong>{rule.label}</strong><small>{rule.description}</small></span>
+          <span>
+            <span class="rule-choice__title"><strong>{rule.label}</strong>{rule.custom && <span class="badge">Własna</span>}</span>
+            <small>{rule.description}</small>
+          </span>
         </label>)}
       </div>
       <div class="form-footer">

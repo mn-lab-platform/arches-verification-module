@@ -1,0 +1,26 @@
+---
+import RulesApp from '../components/RulesApp';
+import '../styles/global.css';
+---
+
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#122f36" />
+    <title>Zasady weryfikacji · Arches</title>
+    <meta name="description" content="Przeglądaj i zarządzaj zasadami weryfikacji zasobów Arches." />
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="page-header">
+        <a class="back-link" href={import.meta.env.BASE_URL}>← Raport weryfikacji</a>
+        <div class="eyebrow">ARCHES · KONTROLA DANYCH</div>
+        <h1>Zasady weryfikacji</h1>
+        <p>Zasady własne działają w raporcie tak samo jak wbudowane. Dodawać i usuwać je mogą osoby, które mogą edytować dany typ zasobu w Arches.</p>
+      </header>
+      <RulesApp client:load />
+    </main>
+  </body>
+</html>
